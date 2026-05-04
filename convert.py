@@ -210,19 +210,20 @@ def _build_question_payload(q: dict, qid_num: int) -> dict:
     payload: dict = {
         "QuestionText": text,
         "DataExportTag": tag,
-        "QuestionID": qid,
         "QuestionType": qt,
         "Selector": sel,
+        "DataVisibility": {"Private": False, "Hidden": False},
         "Configuration": {"QuestionDescriptionOption": "UseText"},
         "QuestionDescription": text[:99],
         "Validation": {
             "Settings": {
                 "ForceResponse": force,
-                "ForceResponseType": force,
                 "Type": "None",
             }
         },
         "Language": [],
+        "NextChoiceId": 1,
+        "NextAnswerId": 1,
     }
 
     if sub is not None:
@@ -231,16 +232,21 @@ def _build_question_payload(q: dict, qid_num: int) -> dict:
     if qt == "MC":
         choices = q.get("choices", [])
         payload["Choices"] = {str(i + 1): {"Display": c} for i, c in enumerate(choices)}
-        payload["ChoiceOrder"] = list(range(1, len(choices) + 1))
+        payload["ChoiceOrder"] = [str(i + 1) for i in range(len(choices))]
+        payload["NextChoiceId"] = len(choices) + 1
 
     if qt == "Matrix":
         rows = q.get("rows", [])
         scale = q.get("scale", [])
         payload["Choices"] = {str(i + 1): {"Display": r} for i, r in enumerate(rows)}
-        payload["ChoiceOrder"] = list(range(1, len(rows) + 1))
+        payload["ChoiceOrder"] = [str(i + 1) for i in range(len(rows))]
         payload["Answers"] = {str(i + 1): {"Display": s} for i, s in enumerate(scale)}
-        payload["AnswerOrder"] = list(range(1, len(scale) + 1))
+        payload["AnswerOrder"] = [str(i + 1) for i in range(len(scale))]
+        payload["NextChoiceId"] = len(rows) + 1
+        payload["NextAnswerId"] = len(scale) + 1
 
+    # QuestionID goes last, matching real QSF export order
+    payload["QuestionID"] = qid
     return payload
 
 
@@ -258,7 +264,7 @@ def build_qsf(survey: dict) -> dict:
     blocks_data: list[dict] = []
     all_question_pairs: list[tuple[int, dict]] = []
 
-    for block in survey["blocks"]:
+    for i, block in enumerate(survey["blocks"]):
         block_id = new_block_id()
         block_elements: list[dict] = []
         block_question_pairs: list[tuple[int, dict]] = []
@@ -275,6 +281,8 @@ def build_qsf(survey: dict) -> dict:
         blocks_data.append({
             "id": block_id,
             "name": block["name"],
+            # First block uses "Default"; subsequent blocks use "Standard"
+            "block_type": "Default" if i == 0 else "Standard",
             "elements": block_elements,
             "question_pairs": block_question_pairs,
         })
@@ -282,18 +290,20 @@ def build_qsf(survey: dict) -> dict:
 
     total_questions = len(all_question_pairs)
 
-    # BL element
-    bl_payload: list[dict] = [
-        {"Type": "Trash", "Description": "Trash / Unused Questions", "ID": "BL_TRASH", "BlockElements": []}
-    ]
+    # BL element: real blocks first, trash block last
+    bl_payload: list[dict] = []
     for bd in blocks_data:
         bl_payload.append({
-            "Type": "Standard",
-            "SubType": "",
+            "Type": bd["block_type"],
             "Description": bd["name"],
             "ID": bd["id"],
             "BlockElements": bd["elements"],
         })
+    bl_payload.append({
+        "Type": "Trash",
+        "Description": "Trash / Unused Questions",
+        "ID": new_block_id(),
+    })
 
     bl_element = {
         "SurveyID": survey_id,
@@ -304,13 +314,12 @@ def build_qsf(survey: dict) -> dict:
         "Payload": bl_payload,
     }
 
-    # FL element
+    # FL element: no EndOfSurvey entry; Count = len(blocks) + 1 (root)
     flow_counter = 2
     flow_items: list[dict] = []
     for bd in blocks_data:
-        flow_items.append({"Type": "Block", "ID": bd["id"], "FlowID": f"FL_{flow_counter}"})
+        flow_items.append({"ID": bd["id"], "Type": "Block", "FlowID": f"FL_{flow_counter}"})
         flow_counter += 1
-    flow_items.append({"Type": "EndOfSurvey", "FlowID": f"FL_{flow_counter}"})
 
     fl_element = {
         "SurveyID": survey_id,
@@ -320,61 +329,20 @@ def build_qsf(survey: dict) -> dict:
         "TertiaryAttribute": None,
         "Payload": {
             "Flow": flow_items,
-            "Properties": {"Count": flow_counter},
+            "Properties": {"Count": flow_counter - 1},
             "FlowID": "FL_1",
             "Type": "Root",
         },
     }
 
-    # SO element
-    so_element = {
-        "SurveyID": survey_id,
-        "Element": "SO",
-        "PrimaryAttribute": "Survey Options",
-        "SecondaryAttribute": None,
-        "TertiaryAttribute": None,
-        "Payload": {
-            "BackButton": "false",
-            "SaveAndContinue": "true",
-            "SurveyProtection": "PublicSurvey",
-            "BallotBoxStuffingPrevention": "false",
-            "NoIndex": "Yes",
-            "SecureResponseFiles": "true",
-            "SurveyExpiration": "None",
-            "SurveyTermination": "DefaultMessage",
-            "Header": "",
-            "Footer": "",
-            "ProgressBarDisplay": "None",
-            "PartialData": "+4 weeks",
-            "ValidationMessage": "",
-            "PreviousButton": "",
-            "NextButton": "",
-            "SurveyTitle": title,
-            "SkinLibrary": "qualtrics",
-            "SkinType": "templated",
-            "Skin": {"brandingId": None, "templateId": "*base"},
-            "NewScoring": 0,
-        },
-    }
-
-    # PROJ element
+    # PROJ element: PrimaryAttribute is "CORE", not "ProjectCategory"
     proj_element = {
         "SurveyID": survey_id,
         "Element": "PROJ",
-        "PrimaryAttribute": "ProjectCategory",
+        "PrimaryAttribute": "CORE",
         "SecondaryAttribute": None,
         "TertiaryAttribute": "1.1.0",
         "Payload": {"ProjectCategory": "CORE", "SchemaVersion": "1.1.0"},
-    }
-
-    # STAT element
-    stat_element = {
-        "SurveyID": survey_id,
-        "Element": "STAT",
-        "PrimaryAttribute": "Survey Statistics",
-        "SecondaryAttribute": None,
-        "TertiaryAttribute": None,
-        "Payload": {"MobileCompatible": True, "ID": "Survey Statistics"},
     }
 
     # QC element
@@ -397,6 +365,56 @@ def build_qsf(survey: dict) -> dict:
         "Payload": None,
     }
 
+    # SCO element: PrimaryAttribute is "Scoring" with full scoring fields
+    sco_element = {
+        "SurveyID": survey_id,
+        "Element": "SCO",
+        "PrimaryAttribute": "Scoring",
+        "SecondaryAttribute": None,
+        "TertiaryAttribute": None,
+        "Payload": {
+            "ScoringCategories": [],
+            "ScoringCategoryGroups": [],
+            "ScoringSummaryCategory": None,
+            "ScoringSummaryAfterQuestions": 0,
+            "ScoringSummaryAfterSurvey": 0,
+            "DefaultScoringCategory": None,
+            "AutoScoringCategory": None,
+        },
+    }
+
+    # SO element
+    so_element = {
+        "SurveyID": survey_id,
+        "Element": "SO",
+        "PrimaryAttribute": "Survey Options",
+        "SecondaryAttribute": None,
+        "TertiaryAttribute": None,
+        "Payload": {
+            "BackButton": "false",
+            "SaveAndContinue": "true",
+            "SurveyProtection": "PublicSurvey",
+            "BallotBoxStuffingPrevention": "false",
+            "NoIndex": "Yes",
+            "SecureResponseFiles": "true",
+            "SurveyExpiration": "None",
+            "SurveyTermination": "DefaultMessage",
+            "Header": "",
+            "Footer": "",
+            "ProgressBarDisplay": "None",
+            "PartialData": "+1 week",
+            "ValidationMessage": "",
+            "PreviousButton": "",
+            "NextButton": "",
+            "SurveyTitle": title,
+            "SkinLibrary": "qualtrics",
+            "SkinType": "templated",
+            "Skin": {"brandingId": None, "templateId": "*base", "overrides": None},
+            "NewScoring": 1,
+            "SurveyMetaDescription": "",
+        },
+    }
+
     # SQ elements
     sq_elements = []
     for qid_num, q in all_question_pairs:
@@ -409,13 +427,23 @@ def build_qsf(survey: dict) -> dict:
             "Payload": _build_question_payload(q, qid_num),
         })
 
+    # STAT element
+    stat_element = {
+        "SurveyID": survey_id,
+        "Element": "STAT",
+        "PrimaryAttribute": "Survey Statistics",
+        "SecondaryAttribute": None,
+        "TertiaryAttribute": None,
+        "Payload": {"MobileCompatible": True, "ID": "Survey Statistics"},
+    }
+
     return {
         "SurveyEntry": {
             "SurveyID": survey_id,
             "SurveyName": title,
-            "SurveyDescription": survey.get("description", ""),
+            "SurveyDescription": survey.get("description", "") or None,
             "SurveyOwnerID": user_id,
-            "SurveyBrandID": "qualtricssurvey",
+            "SurveyBrandID": "qualtrics",
             "DivisionID": None,
             "SurveyLanguage": lang,
             "SurveyActiveResponseSet": rs_id,
@@ -429,15 +457,17 @@ def build_qsf(survey: dict) -> dict:
             "LastActivated": "0000-00-00 00:00:00",
             "Deleted": None,
         },
+        # Element order matches real Qualtrics export: BL, FL, PROJ, QC, RS, SCO, SO, SQ(s), STAT
         "SurveyElements": [
             bl_element,
             fl_element,
-            so_element,
             proj_element,
-            stat_element,
             qc_element,
             rs_element,
+            sco_element,
+            so_element,
             *sq_elements,
+            stat_element,
         ],
     }
 

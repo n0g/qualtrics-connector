@@ -77,7 +77,7 @@ See [example.md](example.md) for a full example.
 
 ## Status
 
-The QSF format is undocumented by Qualtrics. This converter is based on community reverse-engineering. Some fields (especially `text-essay` selector) are best-guess and may need adjustment. Contributions of real `.qsf` exports to validate against are welcome.
+The QSF format is undocumented by Qualtrics. The converter has been validated against a real Qualtrics export and successfully imports. The `text-essay` selector (`ESTB`) is the one remaining best-guess field. Contributions of real `.qsf` exports are welcome.
 
 ## License
 

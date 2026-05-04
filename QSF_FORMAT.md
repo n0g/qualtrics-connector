@@ -87,28 +87,37 @@ Contains the following element types identified by the `Element` field. Each ele
   "PrimaryAttribute": "Survey Blocks",
   "Payload": [
     {
-      "Type": "Trash",
-      "Description": "Trash / Unused Questions",
-      "ID": "BL_TRASH",
-      "BlockElements": []
-    },
-    {
-      "Type": "Standard",
-      "SubType": "",
-      "Description": "Block name",
+      "Type": "Default",
+      "Description": "Default Question Block",
       "ID": "BL_xxxxxxxxxxxxxxx",
       "BlockElements": [
         { "Type": "Question", "QuestionID": "QID1" },
         { "Type": "Page Break" },
         { "Type": "Question", "QuestionID": "QID2" }
       ]
+    },
+    {
+      "Type": "Standard",
+      "Description": "Second Block",
+      "ID": "BL_xxxxxxxxxxxxxxx",
+      "BlockElements": [
+        { "Type": "Question", "QuestionID": "QID3" }
+      ]
+    },
+    {
+      "Type": "Trash",
+      "Description": "Trash / Unused Questions",
+      "ID": "BL_xxxxxxxxxxxxxxx"
     }
   ]
 }
 ```
 
-- **Block ID format:** `BL_` + 15 alphanumeric chars (from R package `make_qid()`) ✅
-- Trash block is required ⚠️
+- **Block ID format:** `BL_` + 15 alphanumeric chars ✅
+- First block uses `"Type": "Default"`; additional blocks use `"Type": "Standard"` ✅
+- Trash block comes **last** in the array ✅
+- Trash block has **no** `BlockElements` key ✅
+- No `SubType` field in real exports ✅
 - `BlockElements` accepts `"Question"` and `"Page Break"` type entries ✅
 
 ---
@@ -121,8 +130,8 @@ Contains the following element types identified by the `Element` field. Each ele
   "PrimaryAttribute": "Survey Flow",
   "Payload": {
     "Flow": [
-      { "Type": "Block", "ID": "BL_xxx", "FlowID": "FL_2" },
-      { "Type": "EndOfSurvey", "FlowID": "FL_3" }
+      { "ID": "BL_xxx", "Type": "Block", "FlowID": "FL_2" },
+      { "ID": "BL_yyy", "Type": "Block", "FlowID": "FL_3" }
     ],
     "Properties": { "Count": 3 },
     "FlowID": "FL_1",
@@ -131,14 +140,14 @@ Contains the following element types identified by the `Element` field. Each ele
 }
 ```
 
-- Root flow has `FlowID: "FL_1"` and `Type: "Root"` ⚠️
-- Each block entry gets a sequential `FlowID` ⚠️
-- `EndOfSurvey` must be the last flow entry ⚠️
-- `Properties.Count` = total number of FL entries including root ⚠️
+- Root flow has `FlowID: "FL_1"` and `Type: "Root"` ✅
+- Each block entry gets a sequential `FlowID` starting at `FL_2` ✅
+- **No `EndOfSurvey` entry** — real exports end with the last block ✅
+- `Properties.Count` = number of blocks + 1 (for the root) ✅
 
 ---
 
-## SO — Survey Options ⚠️
+## SO — Survey Options ✅
 
 ```json
 {
@@ -156,20 +165,25 @@ Contains the following element types identified by the `Element` field. Each ele
     "Header": "",
     "Footer": "",
     "ProgressBarDisplay": "None",
-    "PartialData": "+4 weeks",
+    "PartialData": "+1 week",
     "ValidationMessage": "",
     "PreviousButton": "",
     "NextButton": "",
     "SurveyTitle": "My Survey",
     "SkinLibrary": "qualtrics",
     "SkinType": "templated",
-    "Skin": { "brandingId": null, "templateId": "*base" },
-    "NewScoring": 0
+    "Skin": { "brandingId": null, "templateId": "*base", "overrides": null },
+    "NewScoring": 1,
+    "SurveyMetaDescription": ""
   }
 }
 ```
 
-Note: boolean-like values are strings (`"true"` / `"false"`), not JSON booleans. ✅
+- Boolean-like values are strings (`"true"` / `"false"`), not JSON booleans ✅
+- `NewScoring` is `1`, not `0` ✅
+- `Skin` includes `"overrides": null` ✅
+- `PartialData` is `"+1 week"` ✅
+- `SkinLibrary` is institution-specific in real exports; `"qualtrics"` is a safe default ✅
 
 ---
 
@@ -183,34 +197,41 @@ Note: boolean-like values are strings (`"true"` / `"false"`), not JSON booleans.
   "Payload": {
     "QuestionText": "Full question text",
     "DataExportTag": "Q1",
-    "QuestionID": "QID1",
     "QuestionType": "MC",
     "Selector": "SAVR",
     "SubSelector": "TX",
-    "Configuration": {
-      "QuestionDescriptionOption": "UseText"
-    },
+    "DataVisibility": { "Private": false, "Hidden": false },
+    "Configuration": { "QuestionDescriptionOption": "UseText" },
     "QuestionDescription": "First 99 chars of question text",
     "Choices": {
       "1": { "Display": "Option A" },
       "2": { "Display": "Option B" }
     },
-    "ChoiceOrder": [1, 2],
+    "ChoiceOrder": ["1", "2"],
     "Validation": {
       "Settings": {
         "ForceResponse": "OFF",
-        "ForceResponseType": "OFF",
         "Type": "None"
       }
     },
-    "Language": []
+    "Language": [],
+    "NextChoiceId": 3,
+    "NextAnswerId": 1,
+    "QuestionID": "QID1"
   }
 }
 ```
 
 - `QuestionID` format: `QID` + integer (e.g. `QID1`, `QID2`) ✅
+- `QuestionID` goes at the **end** of the payload, not the top ✅
 - `DataExportTag` defaults to `Q` + integer ✅
+- `ChoiceOrder` values are **strings**, not integers (`["1","2"]` not `[1,2]`) ✅
+- `DataVisibility` field is present ✅
+- `NextChoiceId` = number of choices + 1 ✅
+- `NextAnswerId` = number of answers + 1 (for matrix); 1 otherwise ✅
+- Validation has only `ForceResponse` and `Type` — no `ForceResponseType` ✅
 - `Language` is an empty array for single-language surveys ✅
+- No `DefaultChoices` field ✅
 
 ### Question Types & Selectors
 
@@ -274,12 +295,12 @@ Note: For Matrix, `Choices` = rows (statements), `Answers` = columns (scale) ✅
 
 ---
 
-## PROJ — Project Metadata ⚠️
+## PROJ — Project Metadata ✅
 
 ```json
 {
   "Element": "PROJ",
-  "PrimaryAttribute": "ProjectCategory",
+  "PrimaryAttribute": "CORE",
   "TertiaryAttribute": "1.1.0",
   "Payload": {
     "ProjectCategory": "CORE",
@@ -287,6 +308,8 @@ Note: For Matrix, `Choices` = rows (statements), `Answers` = columns (scale) ✅
   }
 }
 ```
+
+- `PrimaryAttribute` is `"CORE"`, not `"ProjectCategory"` ✅
 
 ---
 
@@ -305,13 +328,18 @@ Note: For Matrix, `Choices` = rows (statements), `Answers` = columns (scale) ✅
 
 ---
 
+## Element Order ✅
+
+Real Qualtrics exports use this element order:
+
+```
+BL → FL → PROJ → QC → RS → SCO → SO → SQ (one per question) → STAT
+```
+
 ## Known Unknowns
 
-- ❓ Exact validation for essay text entry selector (`ESTB` vs `ML` vs `MLT`)
-- ❓ Whether the Trash block is strictly required or optional
-- ❓ Exact `STAT` element structure
-- ❓ Whether `SCO` element is required for import
-- ❓ Required vs optional fields in `SurveyEntry`
-- ❓ Display logic / skip logic structure (`add_skiplogic.R` exists in R package)
+- ❓ Exact selector for essay text entry (`ESTB` vs `ML` vs `MLT`) — `ESTB` used as best-guess
+- ❓ Display logic / skip logic structure
 - ❓ Randomization of choices
 - ❓ Multi-language survey structure
+- ❓ Whether block `Type: "Default"` vs `"Standard"` matters to Qualtrics on import
