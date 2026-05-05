@@ -336,10 +336,119 @@ Real Qualtrics exports use this element order:
 BL → FL → PROJ → QC → RS → SCO → SO → SQ (one per question) → STAT
 ```
 
+---
+
+## FL — Branch Elements ✅
+
+A `Branch` flow element conditionally includes a block based on a question answer.
+
+```json
+{
+  "Type": "Branch",
+  "FlowID": "FL_4",
+  "Description": "New Branch",
+  "BranchLogic": {
+    "0": {
+      "0": {
+        "LogicType": "Question",
+        "QuestionID": "QID1",
+        "QuestionIsInLoop": "no",
+        "ChoiceLocator": "q://QID1/SelectableChoice/1",
+        "Operator": "Selected",
+        "QuestionIDFromLocator": "QID1",
+        "LeftOperand": "q://QID1/SelectableChoice/1",
+        "Type": "Expression",
+        "Description": "..."
+      },
+      "Type": "If"
+    },
+    "Type": "BooleanExpression"
+  },
+  "Flow": [
+    { "Type": "Block", "ID": "BL_xxx", "FlowID": "FL_5", "Autofill": [] }
+  ]
+}
+```
+
+- `BranchLogic` has the same nested structure as `DisplayLogic` but **without** the `"inPage"` field ✅
+- The nested `Flow` array contains the block(s) to show when the condition is true ✅
+- Each nested block entry has `"Autofill": []` ✅
+- All block entries in `Flow` (top-level and nested) have `"Autofill": []` ✅
+- `Properties.Count` = highest FlowID number used across the entire flow ✅
+- A `Branch` element and its nested block together consume two sequential FlowIDs ✅
+
+---
+
+## SQ — Skip Logic ✅
+
+Skip logic is stored in `BlockElements` on the **BL element** (not in the SQ payload). Each question entry in `BlockElements` may include a `SkipLogic` array.
+
+```json
+{
+  "Type": "Question",
+  "QuestionID": "QID1",
+  "SkipLogic": [
+    {
+      "SkipLogicID": 1,
+      "ChoiceLocator": "q://QID1/SelectableChoice/1",
+      "Condition": "Selected",
+      "SkipToDestination": "ENDOFBLOCK",
+      "Locator": "q://QID1/SelectableChoice/1",
+      "SkipToDescription": "...",
+      "Description": "...",
+      "QuestionID": "QID1"
+    }
+  ]
+}
+```
+
+- `ChoiceLocator` format for MC: `q://QIDn/SelectableChoice/k` (k = 1-based choice index) ✅
+- `ChoiceLocator` format for text questions: `q://QIDn/ChoiceTextEntryValue` ✅
+- `Condition` values: `Selected`, `NotSelected`, `Empty`, `NotEmpty` ✅
+- `SkipToDestination` values: `QIDn`, `ENDOFSURVEY`, `ENDOFBLOCK` ✅
+- `Locator` = same as `ChoiceLocator` ✅
+- `SkipLogicID` is unique across the entire survey (not per-question) ✅
+- Multiple skip rules on one question = multiple entries in the `SkipLogic` array ✅
+
+---
+
+## SQ — Display Logic ✅
+
+Display logic is stored inside the **SQ payload**. It controls whether a question is shown based on a previous answer.
+
+```json
+{
+  "DisplayLogic": {
+    "0": {
+      "0": {
+        "LogicType": "Question",
+        "QuestionID": "QID1",
+        "QuestionIsInLoop": "no",
+        "ChoiceLocator": "q://QID1/SelectableChoice/1",
+        "Operator": "Selected",
+        "QuestionIDFromLocator": "QID1",
+        "LeftOperand": "q://QID1/SelectableChoice/1",
+        "Type": "Expression",
+        "Description": "..."
+      },
+      "Type": "If"
+    },
+    "Type": "BooleanExpression",
+    "inPage": false
+  }
+}
+```
+
+- `Operator` values: `Selected`, `NotSelected` ✅
+- `inPage: false` is always present (unlike BranchLogic which omits it) ✅
+- `ChoiceLocator` format same as skip logic ✅
+
+---
+
 ## Known Unknowns
 
 - ❓ Exact selector for essay text entry (`ESTB` vs `ML` vs `MLT`) — `ESTB` used as best-guess
-- ❓ Display logic / skip logic structure
+- ❓ Multiple AND/OR conditions in BranchLogic / DisplayLogic
 - ❓ Randomization of choices
 - ❓ Multi-language survey structure
 - ❓ Whether block `Type: "Default"` vs `"Standard"` matters to Qualtrics on import

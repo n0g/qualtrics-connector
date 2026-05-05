@@ -38,9 +38,46 @@ python convert.py your_survey.md -o output.qsf
 | `[text-essay]` | Multi-line / essay text entry |
 | `[matrix]` | Matrix / Likert scale (single answer per row) |
 | `[matrix-multi]` | Matrix (multiple answers per row) |
-| `[description]` | Descriptive text block (no input) |
+| `[description]` | Descriptive text block with body text (no input) |
 
 Add `*` after the type to make a question required: `[mc]*`
+
+## Branching and logic
+
+### Conditional blocks (branch flow)
+
+Add `branch-if:` on the line after a `# Block Name` heading to wrap the block in a Qualtrics Branch flow element. The block is only shown to respondents who match the condition.
+
+```markdown
+# Premium Features
+branch-if: QID3/1 Selected
+```
+
+`QID3/1` means question 3, choice 1. Questions are numbered sequentially across the entire survey starting at 1.
+
+### Skip logic
+
+Add `skip-if:` after a question's choices to jump to another question, end the block, or end the survey when a specific answer is selected.
+
+```markdown
+## Are you currently subscribed? [mc]*
+- Yes
+- No
+skip-if: 1 Selected → ENDOFBLOCK
+```
+
+Destinations: `ENDOFBLOCK`, `ENDOFSURVEY`, or `QID<n>`.
+
+### Display logic on individual questions
+
+Add `show-if:` immediately after a `## Question [type]` heading to conditionally show that question.
+
+```markdown
+## Which service did you use? [mc]
+show-if: QID2/1 Selected
+- Service A
+- Service B
+```
 
 ## Example
 
@@ -77,7 +114,7 @@ See [example.md](example.md) for a full example.
 
 ## Status
 
-The QSF format is undocumented by Qualtrics. The converter has been validated against a real Qualtrics export and successfully imports. The `text-essay` selector (`ESTB`) is the one remaining best-guess field. Contributions of real `.qsf` exports are welcome.
+The QSF format is undocumented by Qualtrics. The converter has been validated against real Qualtrics exports and successfully imports. Skip logic, display logic, and branch flow elements have all been confirmed against exported `.qsf` files. The `text-essay` selector (`ESTB`) is the one remaining best-guess field. Contributions of real `.qsf` exports are welcome.
 
 ## License
 

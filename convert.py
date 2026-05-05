@@ -59,13 +59,34 @@ QUESTION_TYPES: dict[str, tuple[str, str, str | None]] = {
     "mc-dropdown":  ("MC",     "DL",    "TX"),
     "text":         ("TE",     "SL",    None),
     "text-essay":   ("TE",     "ESTB",  None),
-    "matrix":       ("Matrix", "Likert","SingleAnswer"),
-    "matrix-multi": ("Matrix", "Likert","MultipleAnswer"),
+    "matrix":       ("Matrix", "Likert", "SingleAnswer"),
+    "matrix-multi": ("Matrix", "Likert", "MultipleAnswer"),
     "description":  ("DB",     "TB",    None),
 }
 
-# Matches: ## Question text [type] or ## Question text [type]*
+# ## Question text [type] or ## Question text [type]*
 _QUESTION_RE = re.compile(r"^##\s+(.+?)\s+\[([^\]]+)\]\s*(\*)?\s*$")
+
+# branch-if: QID2/1 Selected  — wraps block in a Branch flow element
+# show-if:   QID2/1 Selected  — on block: DisplayLogic on all questions; on question: DisplayLogic on that question
+_LOGIC_COND_RE = re.compile(r"(QID\d+)/(\d+)\s+(\w+)", re.IGNORECASE)
+
+# skip-if: 1 Selected → ENDOFBLOCK  (→ or > accepted)
+_SKIP_IF_RE = re.compile(r"(\d+)\s+(\w+)\s+[→>]\s+(\S+)", re.IGNORECASE)
+
+
+def _parse_logic_condition(line: str) -> dict | None:
+    m = _LOGIC_COND_RE.search(line)
+    if m:
+        return {"qid": m.group(1), "choice": int(m.group(2)), "operator": m.group(3)}
+    return None
+
+
+def _parse_skip_rule(line: str) -> dict | None:
+    m = _SKIP_IF_RE.search(line)
+    if m:
+        return {"choice": int(m.group(1)), "condition": m.group(2), "destination": m.group(3)}
+    return None
 
 
 def _empty_question(text: str, qtype: str, required: bool) -> dict:
@@ -76,6 +97,9 @@ def _empty_question(text: str, qtype: str, required: bool) -> dict:
         "choices": [],
         "rows": [],
         "scale": [],
+        "body_lines": [],   # paragraph text for [description] questions
+        "skip_logic": [],   # list of {choice, condition, destination}
+        "display_logic": None,  # {qid, choice, operator}
     }
 
 
@@ -121,16 +145,55 @@ def parse_survey(text: str) -> dict:
     def ensure_block() -> None:
         nonlocal current_block
         if current_block is None:
-            current_block = {"name": "Default Question Block", "questions": []}
+            current_block = {
+                "name": "Default Question Block",
+                "questions": [],
+                "branch_logic": None,   # wraps block in Branch flow element
+                "display_logic": None,  # applies DisplayLogic to all questions in block
+            }
 
     while idx < len(lines):
         line = lines[idx]
         idx += 1
 
+        # Skip HTML comments
+        stripped = line.strip()
+        if stripped.startswith("<!--"):
+            continue
+
         # H1 → new block
         if re.match(r"^#\s+", line) and not line.startswith("##"):
             flush_block()
-            current_block = {"name": line.lstrip("# ").strip(), "questions": []}
+            current_block = {
+                "name": line.lstrip("# ").strip(),
+                "questions": [],
+                "branch_logic": None,
+                "display_logic": None,
+            }
+            continue
+
+        # branch-if: block in Branch flow element (before first question in block)
+        if stripped.lower().startswith("branch-if:"):
+            cond = _parse_logic_condition(stripped)
+            if cond is not None and current_block is not None and current_question is None:
+                current_block["branch_logic"] = cond
+            continue
+
+        # show-if: DisplayLogic on block (all questions) or on single question
+        if stripped.lower().startswith("show-if:"):
+            cond = _parse_logic_condition(stripped)
+            if cond is not None:
+                if current_question is not None:
+                    current_question["display_logic"] = cond
+                elif current_block is not None:
+                    current_block["display_logic"] = cond
+            continue
+
+        # skip-if: skip logic on the current question
+        if stripped.lower().startswith("skip-if:"):
+            rule = _parse_skip_rule(stripped)
+            if rule is not None and current_question is not None:
+                current_question["skip_logic"].append(rule)
             continue
 
         # H2 → new question
@@ -146,7 +209,7 @@ def parse_survey(text: str) -> dict:
             continue
 
         # Page break (--- after frontmatter)
-        if line.strip() == "---":
+        if stripped == "---":
             flush_question()
             ensure_block()
             current_block["questions"].append({"type": "page_break"})  # type: ignore[index]
@@ -156,18 +219,23 @@ def parse_survey(text: str) -> dict:
             continue
 
         # scale: line (matrix)
-        if line.strip().lower().startswith("scale:"):
-            raw = line.strip()[6:].strip()
+        if stripped.lower().startswith("scale:"):
+            raw = stripped[6:].strip()
             current_question["scale"] = [s.strip() for s in raw.split(",") if s.strip()]
             continue
 
         # bullet → choice or matrix row
-        if line.strip().startswith("- "):
-            value = line.strip()[2:].strip()
+        if stripped.startswith("- "):
+            value = stripped[2:].strip()
             if current_question["type"].startswith("matrix"):
                 current_question["rows"].append(value)
             else:
                 current_question["choices"].append(value)
+            continue
+
+        # Body text for [description] questions (all remaining content)
+        if current_question["type"] == "description":
+            current_question["body_lines"].append(line)
             continue
 
     flush_block()
@@ -192,13 +260,116 @@ def _validate_question(q: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# QSF builder
+# QSF builder helpers
 # ---------------------------------------------------------------------------
 
-def _build_question_payload(q: dict, qid_num: int) -> dict:
+def _join_body(lines: list[str]) -> str:
+    """Join description body lines into HTML, preserving paragraph breaks."""
+    paragraphs: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if line.strip():
+            current.append(line.strip())
+        else:
+            if current:
+                paragraphs.append(" ".join(current))
+                current = []
+    if current:
+        paragraphs.append(" ".join(current))
+    return "<br><br>".join(paragraphs)
+
+
+def _build_display_logic(dl: dict) -> dict:
+    """Build DisplayLogic payload for a question (has inPage: false)."""
+    return {**_logic_condition_block(dl), "inPage": False}
+
+
+def _build_branch_logic(dl: dict) -> dict:
+    """Build BranchLogic payload for a flow Branch element (no inPage field)."""
+    return _logic_condition_block(dl)
+
+
+def _logic_condition_block(dl: dict) -> dict:
+    src_qid = dl["qid"]
+    choice = dl["choice"]
+    operator = dl["operator"]
+    locator = f"q://{src_qid}/SelectableChoice/{choice}"
+    op_text = "Is Selected" if operator == "Selected" else f"Is {operator}"
+    return {
+        "0": {
+            "0": {
+                "LogicType": "Question",
+                "QuestionID": src_qid,
+                "QuestionIsInLoop": "no",
+                "ChoiceLocator": locator,
+                "Operator": operator,
+                "QuestionIDFromLocator": src_qid,
+                "LeftOperand": locator,
+                "Type": "Expression",
+                "Description": (
+                    f"<span class=\"ConjDesc\">If</span> "
+                    f"<span class=\"QuestionDesc\">{src_qid}</span> "
+                    f"<span class=\"LeftOpDesc\">Choice {choice}</span> "
+                    f"<span class=\"OpDesc\">{op_text}</span> "
+                ),
+            },
+            "Type": "If",
+        },
+        "Type": "BooleanExpression",
+    }
+
+
+def _build_skip_logic_entry(sl: dict, qid: str, q: dict, skip_id: int) -> dict:
+    choice = sl["choice"]
+    condition = sl["condition"]
+    destination = sl["destination"]
+
+    if q["type"] in ("text", "text-essay"):
+        locator = f"q://{qid}/ChoiceTextEntryValue"
+        choice_display = q["text"][:40]
+    else:
+        locator = f"q://{qid}/SelectableChoice/{choice}"
+        choices = q.get("choices", [])
+        choice_display = choices[choice - 1] if 0 < choice <= len(choices) else f"Choice {choice}"
+
+    dest_labels = {"ENDOFSURVEY": "End of Survey", "ENDOFBLOCK": "End of Block"}
+    dest_desc = dest_labels.get(destination, destination)
+
+    cond_labels = {
+        "Selected": "Is Selected", "NotSelected": "Is Not Selected",
+        "Empty": "Is Empty", "NotEmpty": "Is Not Empty",
+    }
+    cond_desc = cond_labels.get(condition, condition)
+
+    return {
+        "SkipLogicID": skip_id,
+        "ChoiceLocator": locator,
+        "Condition": condition,
+        "SkipToDestination": destination,
+        "Locator": locator,
+        "SkipToDescription": (
+            f"{q['text'][:40]} <strong>{choice_display}</strong>  "
+            f"<strong>{cond_desc}</strong>"
+        ),
+        "Description": (
+            f"Condition: <strong title=\"{choice_display}\">{choice_display}</strong> "
+            f"<strong>{cond_desc}</strong>. Skip To: <strong>{dest_desc}</strong>."
+        ),
+        "QuestionID": qid,
+    }
+
+
+# ---------------------------------------------------------------------------
+# QSF payload builder
+# ---------------------------------------------------------------------------
+
+def _build_question_payload(
+    q: dict,
+    qid_num: int,
+    display_logic: dict | None = None,
+) -> dict:
     qid = f"QID{qid_num}"
     tag = f"Q{qid_num}"
-    text: str = q["text"]
     qtype = q["type"]
     required: bool = q.get("required", False)
 
@@ -207,14 +378,20 @@ def _build_question_payload(q: dict, qid_num: int) -> dict:
 
     force = "ON" if required else "OFF"
 
+    # Description questions use body text as QuestionText when available
+    if qt == "DB" and q.get("body_lines"):
+        question_text = _join_body(q["body_lines"])
+    else:
+        question_text = q["text"]
+
     payload: dict = {
-        "QuestionText": text,
+        "QuestionText": question_text,
         "DataExportTag": tag,
         "QuestionType": qt,
         "Selector": sel,
         "DataVisibility": {"Private": False, "Hidden": False},
         "Configuration": {"QuestionDescriptionOption": "UseText"},
-        "QuestionDescription": text[:99],
+        "QuestionDescription": q["text"][:99],
         "Validation": {
             "Settings": {
                 "ForceResponse": force,
@@ -234,6 +411,10 @@ def _build_question_payload(q: dict, qid_num: int) -> dict:
         payload["Choices"] = {str(i + 1): {"Display": c} for i, c in enumerate(choices)}
         payload["ChoiceOrder"] = [str(i + 1) for i in range(len(choices))]
         payload["NextChoiceId"] = len(choices) + 1
+        payload["DynamicChoicesData"] = []
+
+    if qt == "TE":
+        payload["SearchSource"] = {"AllowFreeResponse": "false"}
 
     if qt == "Matrix":
         rows = q.get("rows", [])
@@ -245,10 +426,19 @@ def _build_question_payload(q: dict, qid_num: int) -> dict:
         payload["NextChoiceId"] = len(rows) + 1
         payload["NextAnswerId"] = len(scale) + 1
 
+    # Display logic: question-level overrides block-level show-if
+    effective_dl = q.get("display_logic") or display_logic
+    if effective_dl:
+        payload["DisplayLogic"] = _build_display_logic(effective_dl)
+
     # QuestionID goes last, matching real QSF export order
     payload["QuestionID"] = qid
     return payload
 
+
+# ---------------------------------------------------------------------------
+# QSF builder
+# ---------------------------------------------------------------------------
 
 def build_qsf(survey: dict) -> dict:
     survey_id = new_survey_id()
@@ -261,21 +451,32 @@ def build_qsf(survey: dict) -> dict:
 
     # Assign QIDs and collect per-block data
     qid_counter = 1
+    skip_id_counter = 1
     blocks_data: list[dict] = []
-    all_question_pairs: list[tuple[int, dict]] = []
+    # Each entry: (qid_num, question_dict, block_display_logic_or_None)
+    all_question_triples: list[tuple[int, dict, dict | None]] = []
 
     for i, block in enumerate(survey["blocks"]):
         block_id = new_block_id()
         block_elements: list[dict] = []
-        block_question_pairs: list[tuple[int, dict]] = []
+        block_triples: list[tuple[int, dict, dict | None]] = []
+        # block-level show-if applies DisplayLogic to all questions (not via Branch)
+        block_dl = block.get("display_logic")
 
         for q in block["questions"]:
             if q["type"] == "page_break":
                 block_elements.append({"Type": "Page Break"})
             else:
                 qid = f"QID{qid_counter}"
-                block_elements.append({"Type": "Question", "QuestionID": qid})
-                block_question_pairs.append((qid_counter, q))
+                elem: dict = {"Type": "Question", "QuestionID": qid}
+                if q.get("skip_logic"):
+                    elem["SkipLogic"] = [
+                        _build_skip_logic_entry(sl, qid, q, skip_id_counter + k)
+                        for k, sl in enumerate(q["skip_logic"])
+                    ]
+                    skip_id_counter += len(q["skip_logic"])
+                block_elements.append(elem)
+                block_triples.append((qid_counter, q, block_dl))
                 qid_counter += 1
 
         blocks_data.append({
@@ -284,11 +485,12 @@ def build_qsf(survey: dict) -> dict:
             # First block uses "Default"; subsequent blocks use "Standard"
             "block_type": "Default" if i == 0 else "Standard",
             "elements": block_elements,
-            "question_pairs": block_question_pairs,
+            "triples": block_triples,
+            "branch_logic": block.get("branch_logic"),  # None → regular block in flow
         })
-        all_question_pairs.extend(block_question_pairs)
+        all_question_triples.extend(block_triples)
 
-    total_questions = len(all_question_pairs)
+    total_questions = len(all_question_triples)
 
     # BL element: real blocks first, trash block last
     bl_payload: list[dict] = []
@@ -314,12 +516,33 @@ def build_qsf(survey: dict) -> dict:
         "Payload": bl_payload,
     }
 
-    # FL element: no EndOfSurvey entry; Count = len(blocks) + 1 (root)
+    # FL element
+    # Each block (or branch+nested block) consumes sequential FlowIDs starting at FL_2.
+    # Properties.Count = max FlowID used.
     flow_counter = 2
     flow_items: list[dict] = []
+
     for bd in blocks_data:
-        flow_items.append({"ID": bd["id"], "Type": "Block", "FlowID": f"FL_{flow_counter}"})
-        flow_counter += 1
+        if bd["branch_logic"]:
+            branch_flow_id = f"FL_{flow_counter}"
+            flow_counter += 1
+            nested_flow_id = f"FL_{flow_counter}"
+            flow_counter += 1
+            flow_items.append({
+                "Type": "Branch",
+                "FlowID": branch_flow_id,
+                "Description": "New Branch",
+                "BranchLogic": _build_branch_logic(bd["branch_logic"]),
+                "Flow": [{"Type": "Block", "ID": bd["id"], "FlowID": nested_flow_id, "Autofill": []}],
+            })
+        else:
+            flow_items.append({
+                "ID": bd["id"],
+                "Type": "Block",
+                "FlowID": f"FL_{flow_counter}",
+                "Autofill": [],
+            })
+            flow_counter += 1
 
     fl_element = {
         "SurveyID": survey_id,
@@ -335,7 +558,7 @@ def build_qsf(survey: dict) -> dict:
         },
     }
 
-    # PROJ element: PrimaryAttribute is "CORE", not "ProjectCategory"
+    # PROJ element
     proj_element = {
         "SurveyID": survey_id,
         "Element": "PROJ",
@@ -365,7 +588,7 @@ def build_qsf(survey: dict) -> dict:
         "Payload": None,
     }
 
-    # SCO element: PrimaryAttribute is "Scoring" with full scoring fields
+    # SCO element
     sco_element = {
         "SurveyID": survey_id,
         "Element": "SCO",
@@ -417,14 +640,14 @@ def build_qsf(survey: dict) -> dict:
 
     # SQ elements
     sq_elements = []
-    for qid_num, q in all_question_pairs:
+    for qid_num, q, block_dl in all_question_triples:
         sq_elements.append({
             "SurveyID": survey_id,
             "Element": "SQ",
             "PrimaryAttribute": f"QID{qid_num}",
             "SecondaryAttribute": q["text"][:99],
             "TertiaryAttribute": None,
-            "Payload": _build_question_payload(q, qid_num),
+            "Payload": _build_question_payload(q, qid_num, display_logic=block_dl),
         })
 
     # STAT element
@@ -498,7 +721,7 @@ def main() -> None:
     output_path.write_text(json.dumps(qsf, indent=2, ensure_ascii=False), encoding="utf-8")
 
     q_count = sum(
-        1 for b in survey["blocks"] for q in b["questions"] if q["type"] != "page_break"
+        1 for b in survey["blocks"] for q in b["questions"] if q.get("type") != "page_break"
     )
     block_count = len(survey["blocks"])
 
