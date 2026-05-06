@@ -233,6 +233,54 @@ Contains the following element types identified by the `Element` field. Each ele
 - `Language` is an empty array for single-language surveys ✅
 - No `DefaultChoices` field ✅
 
+### RecodeValues and VariableNaming ✅
+
+Optional fields added to the SQ payload after `QuestionID` when set on choices:
+
+```json
+{
+  "QuestionID": "QID15",
+  "RecodeValues":  {"1": "9", "2": "2", "3": "3"},
+  "VariableNaming": {"1": "FINANCE", "2": "PHYSICAL", "3": "EMOTIONAL"}
+}
+```
+
+- Keys are **1-based choice index strings** ✅
+- Values are **strings** (even for numeric recodes) ✅
+- Both fields appear after `QuestionID`, not inside `Choices` ✅
+- Only present when at least one choice has a recode or variable name set ✅
+
+### Translations (Language field) ✅
+
+The `Language` field in the SQ payload is `[]` when no translations exist, or a dict keyed by language code when translations are present:
+
+```json
+{
+  "Language": {
+    "DE": {
+      "QuestionText": "Welche Art von Schaden koennte entstehen?",
+      "Choices": {
+        "1": {"Display": "Finanzieller Verlust"},
+        "2": {"Display": "Körperliche Sicherheit"}
+      }
+    }
+  }
+}
+```
+
+For matrix questions, `Choices` contains translated rows and `Answers` contains translated scale labels ✅
+
+When any translations are present, the SO element gains additional fields ✅:
+
+```json
+{
+  "AvailableLanguages": {"EN": [], "DE": []},
+  "HiddenLanguages": [],
+  "CustomLanguages": [],
+  "MetaDataTranslations": {}
+}
+```
+
 ### Question Types & Selectors
 
 | Markdown type | QuestionType | Selector | SubSelector |
@@ -442,6 +490,61 @@ Display logic is stored inside the **SQ payload**. It controls whether a questio
 - `Operator` values: `Selected`, `NotSelected` ✅
 - `inPage: false` is always present (unlike BranchLogic which omits it) ✅
 - `ChoiceLocator` format same as skip logic ✅
+
+---
+
+## BL — Loop & Merge Block ✅
+
+A loop block repeats once for each choice the respondent selected in a source question. It differs from a regular block in three ways:
+
+1. Has `"SubType": ""` on the block entry in BL
+2. Has an `"Options"` object with looping configuration
+3. Flow entry uses `"Type": "Standard"` (not `"Type": "Block"`) with no `"Autofill"` field
+
+### Block definition (BL):
+
+```json
+{
+  "Type": "Standard",
+  "SubType": "",
+  "Description": "Threat Details",
+  "ID": "BL_xxx",
+  "BlockElements": [...],
+  "Options": {
+    "BlockLocking": "false",
+    "RandomizeQuestions": "false",
+    "Looping": "Question",
+    "LoopingOptions": {
+      "Locator": "q://QID13/ChoiceGroup/SelectedChoices",
+      "QID": "QID13",
+      "ChoiceGroupLocator": "q://QID13/ChoiceGroup/SelectedChoices",
+      "Static": {
+        "1": {"2": ""},
+        "2": {"2": ""},
+        "3": {"2": ""}
+      },
+      "Randomization": "None"
+    }
+  }
+}
+```
+
+- `"Looping": "Question"` — loop over selected choices from a prior question ✅
+- `"Static"` has one entry per choice in the source question, each `{"2": ""}` ✅
+- `"Locator"` = `"ChoiceGroupLocator"` = `"q://QIDn/ChoiceGroup/SelectedChoices"` ✅
+
+### Flow entry (FL):
+
+```json
+{"ID": "BL_xxx", "Type": "Standard", "FlowID": "FL_16"}
+```
+
+- Uses `"Type": "Standard"` (not `"Type": "Block"`) ✅
+- **No** `"Autofill"` field ✅
+
+### Piped text in questions:
+
+Within loop block questions, `${lm://Field/1}` is replaced at runtime with the choice label of the current loop iteration ✅
 
 ---
 

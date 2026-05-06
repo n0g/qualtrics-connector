@@ -239,6 +239,46 @@ branch-if: QID3/1 Selected
 
 ---
 
+## Loop & Merge
+
+`loop-from:` on a block (line immediately after `# Block Name`) configures the block as a Loop & Merge block. The block repeats once for each choice the respondent selected in the source question. Within loop block questions, use `${lm://Field/1}` to pipe in the current choice label.
+
+```
+# Block Name
+loop-from: QID<n>
+```
+
+| Field | Description |
+|-------|-------------|
+| `QID<n>` | Question whose selected choices drive the loop iterations |
+
+```markdown
+# Threat Actors
+## Who are you concerned might misuse your data? [mc-multi]
+- Scammers or fraudsters
+- Stalkers or abusive partners
+- Identity thieves
+
+# Threat Details
+loop-from: QID1
+
+## How do you think ${lm://Field/1} would misuse your data? [mc-multi]
+- Phishing or scam attempts
+- Locating me physically
+- Accessing my financial accounts
+
+## Have you personally experienced ${lm://Field/1} misusing data? [mc]*
+- Yes
+- No
+- I am not sure
+```
+
+**Piped text:** `${lm://Field/1}` is replaced at runtime by Qualtrics with the choice label of the current loop iteration. Write it directly in the question text — no extra configuration needed.
+
+**Note:** The source question must be an `[mc-multi]` question. Loop blocks cannot be combined with `branch-if:` in the current implementation.
+
+---
+
 ## Display Logic on Individual Questions
 
 `show-if:` on a question (line immediately after `## Question text [type]`) conditionally shows that question based on a previous answer.
@@ -327,10 +367,88 @@ branch-if: QID3/4 Selected
 
 ---
 
+## Recode Values and Variable Naming
+
+Add `[VARNAME]` or `[VARNAME=N]` at the end of a choice or matrix row to assign a variable name and/or a numeric recode value for data export.
+
+```
+- Choice text [VARNAME]
+- Choice text [VARNAME=N]
+```
+
+| Field | Description |
+|-------|-------------|
+| `VARNAME` | All-caps variable name (e.g. `FINANCE`, `PHYSICAL_SAFETY`) |
+| `N` | Integer recode value for this choice in exported data |
+
+```markdown
+## What kind of harm concerns you? [mc-multi]
+- Financial loss [FINANCE=9]
+- Risk to physical safety [PHYSICAL=2]
+- Emotional distress [EMOTIONAL=3]
+- None of the above [NONE=8]
+```
+
+---
+
+## Translations
+
+Add `languages:` to the frontmatter and per-question `lang-XX:` lines to provide translations.
+
+```yaml
+---
+title: My Survey
+language: EN
+languages: [DE, FR]
+---
+```
+
+**Question text:**
+Place `lang-XX:` immediately after the question heading:
+
+```markdown
+## What is your age? [mc]*
+lang-de: Wie alt sind Sie?
+```
+
+**Choice translations:**
+Place `lang-XX:` on the line immediately after the choice:
+
+```markdown
+- Under 18
+  lang-de: Unter 18 Jahren
+- 18–24
+  lang-de: 18–24
+```
+
+**Matrix scale translations:**
+Use `lang-XX-scale:` with a comma-separated list matching the scale length:
+
+```markdown
+scale: Strongly Disagree, Neutral, Strongly Agree
+lang-de-scale: Stimme gar nicht zu, Neutral, Stimme voll zu
+```
+
+**Matrix row translations:**
+Same as choices — place `lang-XX:` after each row bullet:
+
+```markdown
+- Ease of use
+  lang-de: Benutzerfreundlichkeit
+- Performance
+  lang-de: Leistung
+```
+
+Qualtrics will serve the translated version to respondents whose browser/panel language matches.
+
+---
+
 ## Limitations
 
 - Branch logic conditions support only a single `QID/choice operator` expression (AND/OR not yet supported)
+- Loop blocks cannot be combined with `branch-if:` in the same block
+- `[VARNAME]` annotations on matrix rows produce `VariableNaming` entries but Qualtrics may not honor them for matrix questions
+- Survey-level metadata (title, description) translations are not yet supported
 - Scoring is not supported
 - Choice randomization is not supported
-- Multi-language questions are not supported
 - Rich text / HTML in question text is not supported

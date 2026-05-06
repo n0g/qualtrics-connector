@@ -74,6 +74,15 @@ _LOGIC_COND_RE = re.compile(r"(QID\d+)/(\d+)\s+(\w+)", re.IGNORECASE)
 # skip-if: 1 Selected → ENDOFBLOCK  (→ or > accepted)
 _SKIP_IF_RE = re.compile(r"(\d+)\s+(\w+)\s+[→>]\s+(\S+)", re.IGNORECASE)
 
+# loop-from: QID13  — Loop & Merge block driven by selected choices of source question
+_LOOP_FROM_RE = re.compile(r"(QID\d+)", re.IGNORECASE)
+
+# [VARNAME] or [VARNAME=N] on a choice/row bullet — variable naming and recode values
+_CHOICE_ANNOTATION_RE = re.compile(r'^(.*?)\s*\[([A-Z_][A-Z0-9_]*)(?:=(\d+))?\]\s*$')
+
+# lang-XX: or lang-XX-scale: for translations
+_LANG_LINE_RE = re.compile(r'^lang-([a-z]{2})(?:-(scale))?:\s*(.+)$', re.IGNORECASE)
+
 
 def _parse_logic_condition(line: str) -> dict | None:
     m = _LOGIC_COND_RE.search(line)
@@ -97,9 +106,15 @@ def _empty_question(text: str, qtype: str, required: bool) -> dict:
         "choices": [],
         "rows": [],
         "scale": [],
-        "body_lines": [],   # paragraph text for [description] questions
-        "skip_logic": [],   # list of {choice, condition, destination}
-        "display_logic": None,  # {qid, choice, operator}
+        "body_lines": [],        # paragraph text for [description] questions
+        "skip_logic": [],        # list of {choice, condition, destination}
+        "display_logic": None,   # {qid, choice, operator}
+        "recode_values": {},     # {1-based choice idx → recode value string}
+        "variable_names": {},    # {1-based choice idx → variable name string}
+        "text_translations": {}, # {lang_code → translated question text}
+        "choice_translations": {},  # {lang_code → {1-based idx → text}}
+        "row_translations": {},     # {lang_code → {1-based idx → text}}
+        "scale_translations": {},   # {lang_code → [text, ...]}
     }
 
 
@@ -122,6 +137,10 @@ def parse_survey(text: str) -> dict:
     title = str(meta.get("title", "Untitled Survey"))
     language = str(meta.get("language", "EN")).upper()
     description = str(meta.get("description", ""))
+    langs_raw = meta.get("languages", [])
+    if isinstance(langs_raw, str):
+        langs_raw = [l.strip() for l in langs_raw.split(",") if l.strip()]
+    extra_languages: list[str] = [l.upper() for l in langs_raw]
 
     blocks: list[dict] = []
     current_block: dict | None = None
@@ -150,7 +169,12 @@ def parse_survey(text: str) -> dict:
                 "questions": [],
                 "branch_logic": None,   # wraps block in Branch flow element
                 "display_logic": None,  # applies DisplayLogic to all questions in block
+                "loop_from": None,      # Loop & Merge: source question QID
             }
+
+    # Tracks what was last parsed to associate lang-XX: lines with the right field.
+    # Values: "question_text" | "scale" | ("choice", 1-based-idx) | ("row", 1-based-idx)
+    _last_item_type: str | tuple | None = None
 
     while idx < len(lines):
         line = lines[idx]
@@ -169,6 +193,7 @@ def parse_survey(text: str) -> dict:
                 "questions": [],
                 "branch_logic": None,
                 "display_logic": None,
+                "loop_from": None,
             }
             continue
 
@@ -177,6 +202,13 @@ def parse_survey(text: str) -> dict:
             cond = _parse_logic_condition(stripped)
             if cond is not None and current_block is not None and current_question is None:
                 current_block["branch_logic"] = cond
+            continue
+
+        # loop-from: Loop & Merge block driven by selected choices of source question
+        if stripped.lower().startswith("loop-from:"):
+            m = _LOOP_FROM_RE.search(stripped)
+            if m is not None and current_block is not None and current_question is None:
+                current_block["loop_from"] = m.group(1).upper()
             continue
 
         # show-if: DisplayLogic on block (all questions) or on single question
@@ -206,6 +238,7 @@ def parse_survey(text: str) -> dict:
                 qtype=m.group(2).strip(),
                 required=m.group(3) == "*",
             )
+            _last_item_type = "question_text"
             continue
 
         # Page break (--- after frontmatter)
@@ -222,15 +255,51 @@ def parse_survey(text: str) -> dict:
         if stripped.lower().startswith("scale:"):
             raw = stripped[6:].strip()
             current_question["scale"] = [s.strip() for s in raw.split(",") if s.strip()]
+            _last_item_type = "scale"
             continue
 
-        # bullet → choice or matrix row
+        # lang-XX: or lang-XX-scale: translation annotation
+        m_lang = _LANG_LINE_RE.match(stripped)
+        if m_lang:
+            lang = m_lang.group(1).upper()
+            is_scale = m_lang.group(2) is not None
+            text = m_lang.group(3).strip()
+            if is_scale:
+                current_question["scale_translations"][lang] = [s.strip() for s in text.split(",") if s.strip()]
+            elif _last_item_type == "question_text":
+                current_question["text_translations"][lang] = text
+            elif _last_item_type == "scale":
+                current_question["scale_translations"][lang] = [s.strip() for s in text.split(",") if s.strip()]
+            elif isinstance(_last_item_type, tuple):
+                kind, item_idx = _last_item_type
+                if kind == "choice":
+                    current_question["choice_translations"].setdefault(lang, {})[item_idx] = text
+                elif kind == "row":
+                    current_question["row_translations"].setdefault(lang, {})[item_idx] = text
+            continue
+
+        # bullet → choice or matrix row (with optional [VARNAME=N] annotation)
         if stripped.startswith("- "):
             value = stripped[2:].strip()
+            ann = _CHOICE_ANNOTATION_RE.match(value)
+            if ann:
+                value = ann.group(1).strip()
+                varname = ann.group(2)
+                recode = ann.group(3)
+            else:
+                varname = recode = None
             if current_question["type"].startswith("matrix"):
                 current_question["rows"].append(value)
+                item_idx = len(current_question["rows"])
+                _last_item_type = ("row", item_idx)
             else:
                 current_question["choices"].append(value)
+                item_idx = len(current_question["choices"])
+                _last_item_type = ("choice", item_idx)
+            if varname:
+                current_question["variable_names"][item_idx] = varname
+            if recode is not None:
+                current_question["recode_values"][item_idx] = recode
             continue
 
         # Body text for [description] questions (all remaining content)
@@ -244,6 +313,7 @@ def parse_survey(text: str) -> dict:
         "title": title,
         "language": language,
         "description": description,
+        "extra_languages": extra_languages,
         "blocks": blocks,
     }
 
@@ -363,6 +433,44 @@ def _build_skip_logic_entry(sl: dict, qid: str, q: dict, skip_id: int) -> dict:
 # QSF payload builder
 # ---------------------------------------------------------------------------
 
+def _build_language_dict(q: dict) -> dict:
+    """Build the Language dict for a question's SQ payload from translation data."""
+    all_langs: set[str] = set()
+    all_langs |= set(q.get("text_translations", {}).keys())
+    all_langs |= set(q.get("scale_translations", {}).keys())
+    all_langs |= set(q.get("choice_translations", {}).keys())
+    all_langs |= set(q.get("row_translations", {}).keys())
+
+    result: dict = {}
+    for lang in sorted(all_langs):
+        entry: dict = {}
+        if lang in q.get("text_translations", {}):
+            entry["QuestionText"] = q["text_translations"][lang]
+        is_matrix = q["type"].startswith("matrix")
+        if is_matrix:
+            row_trans = q.get("row_translations", {}).get(lang, {})
+            if row_trans:
+                entry["Choices"] = {
+                    str(i + 1): {"Display": row_trans[i + 1]}
+                    for i in range(len(q["rows"]))
+                    if (i + 1) in row_trans
+                }
+            scale_trans = q.get("scale_translations", {}).get(lang, [])
+            if scale_trans:
+                entry["Answers"] = {str(i + 1): {"Display": s} for i, s in enumerate(scale_trans)}
+        else:
+            choice_trans = q.get("choice_translations", {}).get(lang, {})
+            if choice_trans:
+                entry["Choices"] = {
+                    str(i + 1): {"Display": choice_trans[i + 1]}
+                    for i in range(len(q["choices"]))
+                    if (i + 1) in choice_trans
+                }
+        if entry:
+            result[lang] = entry
+    return result
+
+
 def _build_question_payload(
     q: dict,
     qid_num: int,
@@ -398,7 +506,7 @@ def _build_question_payload(
                 "Type": "None",
             }
         },
-        "Language": [],
+        "Language": _build_language_dict(q) or [],
         "NextChoiceId": 1,
         "NextAnswerId": 1,
     }
@@ -419,20 +527,40 @@ def _build_question_payload(
     if qt == "Matrix":
         rows = q.get("rows", [])
         scale = q.get("scale", [])
+        payload["DefaultChoices"] = False
         payload["Choices"] = {str(i + 1): {"Display": r} for i, r in enumerate(rows)}
         payload["ChoiceOrder"] = [str(i + 1) for i in range(len(rows))]
         payload["Answers"] = {str(i + 1): {"Display": s} for i, s in enumerate(scale)}
         payload["AnswerOrder"] = [str(i + 1) for i in range(len(scale))]
         payload["NextChoiceId"] = len(rows) + 1
         payload["NextAnswerId"] = len(scale) + 1
+        payload["GradingData"] = []
+        payload["ChoiceDataExportTags"] = False
+        # Override Configuration with matrix-specific layout settings.
+        # ChoiceColumnWidth=40 gives the statement column 40% of the row width;
+        # the Qualtrics default of 25 is too narrow for long statements.
+        payload["Configuration"] = {
+            "QuestionDescriptionOption": "UseText",
+            "TextPosition": "inline",
+            "ChoiceColumnWidth": 40,
+            "RepeatHeaders": "none",
+            "WhiteSpace": "OFF",
+            "MobileFirst": True,
+        }
 
     # Display logic: question-level overrides block-level show-if
     effective_dl = q.get("display_logic") or display_logic
     if effective_dl:
         payload["DisplayLogic"] = _build_display_logic(effective_dl)
 
-    # QuestionID goes last, matching real QSF export order
+    # QuestionID goes last (before optional recode/varname fields), matching real QSF export order
     payload["QuestionID"] = qid
+
+    if q.get("recode_values"):
+        payload["RecodeValues"] = {str(k): str(v) for k, v in q["recode_values"].items()}
+    if q.get("variable_names"):
+        payload["VariableNaming"] = {str(k): v for k, v in q["variable_names"].items()}
+
     return payload
 
 
@@ -448,6 +576,7 @@ def build_qsf(survey: dict) -> dict:
 
     title: str = survey["title"]
     lang: str = survey["language"]
+    extra_languages: list[str] = survey.get("extra_languages", [])
 
     # Assign QIDs and collect per-block data
     qid_counter = 1
@@ -487,20 +616,43 @@ def build_qsf(survey: dict) -> dict:
             "elements": block_elements,
             "triples": block_triples,
             "branch_logic": block.get("branch_logic"),  # None → regular block in flow
+            "loop_from": block.get("loop_from"),        # None → not a loop block
         })
         all_question_triples.extend(block_triples)
+
+    # Lookup from QID string to question dict, used when building loop block Options
+    qid_to_question = {f"QID{n}": q for n, q, _ in all_question_triples}
 
     total_questions = len(all_question_triples)
 
     # BL element: real blocks first, trash block last
     bl_payload: list[dict] = []
     for bd in blocks_data:
-        bl_payload.append({
+        bl_entry: dict = {
             "Type": bd["block_type"],
             "Description": bd["name"],
             "ID": bd["id"],
             "BlockElements": bd["elements"],
-        })
+        }
+        if bd.get("loop_from"):
+            src_qid = bd["loop_from"]
+            src_q = qid_to_question.get(src_qid, {})
+            n_choices = len(src_q.get("choices", []))
+            locator = f"q://{src_qid}/ChoiceGroup/SelectedChoices"
+            bl_entry["SubType"] = ""
+            bl_entry["Options"] = {
+                "BlockLocking": "false",
+                "RandomizeQuestions": "false",
+                "Looping": "Question",
+                "LoopingOptions": {
+                    "Locator": locator,
+                    "QID": src_qid,
+                    "ChoiceGroupLocator": locator,
+                    "Static": {str(j + 1): {"2": ""} for j in range(n_choices)},
+                    "Randomization": "None",
+                },
+            }
+        bl_payload.append(bl_entry)
     bl_payload.append({
         "Type": "Trash",
         "Description": "Trash / Unused Questions",
@@ -523,7 +675,14 @@ def build_qsf(survey: dict) -> dict:
     flow_items: list[dict] = []
 
     for bd in blocks_data:
-        if bd["branch_logic"]:
+        if bd.get("loop_from"):
+            flow_items.append({
+                "ID": bd["id"],
+                "Type": "Standard",
+                "FlowID": f"FL_{flow_counter}",
+            })
+            flow_counter += 1
+        elif bd["branch_logic"]:
             branch_flow_id = f"FL_{flow_counter}"
             flow_counter += 1
             nested_flow_id = f"FL_{flow_counter}"
@@ -637,6 +796,13 @@ def build_qsf(survey: dict) -> dict:
             "SurveyMetaDescription": "",
         },
     }
+    if extra_languages:
+        available = {lang: []}
+        available.update({l: [] for l in extra_languages})
+        so_element["Payload"]["AvailableLanguages"] = available
+        so_element["Payload"]["HiddenLanguages"] = []
+        so_element["Payload"]["CustomLanguages"] = []
+        so_element["Payload"]["MetaDataTranslations"] = {}
 
     # SQ elements
     sq_elements = []

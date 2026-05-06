@@ -27,6 +27,19 @@ python convert.py your_survey.md
 python convert.py your_survey.md -o output.qsf
 ```
 
+## Supported features
+
+| Feature | Syntax |
+|---------|--------|
+| Required question | `[mc]*` |
+| Skip logic | `skip-if: N Condition → Destination` |
+| Branch flow | `branch-if: QIDn/choice Operator` |
+| Display logic | `show-if: QIDn/choice Operator` |
+| Loop & Merge | `loop-from: QIDn` |
+| Choice recode value | `- Choice text [VARNAME=N]` |
+| Choice variable name | `- Choice text [VARNAME]` |
+| Translations | `lang-XX:` lines + `languages: [XX]` frontmatter |
+
 ## Supported question types
 
 | Markdown syntax | Qualtrics type |
@@ -67,6 +80,58 @@ skip-if: 1 Selected → ENDOFBLOCK
 ```
 
 Destinations: `ENDOFBLOCK`, `ENDOFSURVEY`, or `QID<n>`.
+
+### Recode values and variable naming
+
+Add `[VARNAME=N]` (or just `[VARNAME]` or `[=N]`) at the end of a choice to assign an export variable name and/or numeric recode value:
+
+```markdown
+## What kind of harm concerns you? [mc-multi]
+- Financial loss [FINANCE=9]
+- Risk to physical safety [PHYSICAL=2]
+- Emotional distress [EMOTIONAL=3]
+```
+
+### Translations
+
+Add `languages:` to the frontmatter and `lang-XX:` lines after question text and choices:
+
+```markdown
+---
+title: My Survey
+language: EN
+languages: [DE]
+---
+
+## What is your age? [mc]*
+lang-de: Wie alt sind Sie?
+- Under 18
+  lang-de: Unter 18 Jahren
+- 18–24
+  lang-de: 18–24
+```
+
+For matrix scale labels: `lang-de-scale: val1, val2, val3`
+
+### Loop & Merge
+
+Add `loop-from:` on the line after a `# Block Name` heading to configure a Loop & Merge block. The block repeats once per choice the respondent selected in the source question. Use `${lm://Field/1}` in question text to pipe in the current choice label.
+
+```markdown
+# Threat Actors
+## Who concerns you? [mc-multi]
+- Scammers
+- Stalkers
+- Identity thieves
+
+# Threat Details
+loop-from: QID1
+
+## How would ${lm://Field/1} misuse your data? [mc-multi]
+- Phishing
+- Physical location
+- Financial fraud
+```
 
 ### Display logic on individual questions
 
