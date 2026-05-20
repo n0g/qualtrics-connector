@@ -152,3 +152,35 @@ carry-from: @threat_actors
 - Single condition only in branch/display/skip logic (no AND/OR)
 - Loop blocks cannot be combined with `branch-if:`
 - No choice randomization or scoring
+
+## Qualtrics CSV export format (for synthetic data generation)
+
+Verified against a real export with numeric values enabled. Key facts:
+
+**Metadata columns** (always present, in this order):
+`StartDate`, `EndDate`, `Status`, `IPAddress`, `Progress`, `Duration (in seconds)`, `Finished`, `RecordedDate`, `ResponseId`, `RecipientLastName`, `RecipientFirstName`, `RecipientEmail`, `ExternalReference`, `LocationLatitude`, `LocationLongitude`, `DistributionChannel`, `UserLanguage`
+
+**Single-answer questions** (`[mc]`, `[mc-dropdown]`, `[matrix]` rows, `[rank]` positions):
+- One column named `{label}` (or `{label}_{row}` for matrix rows / rank positions)
+- Value is the numeric choice index (1, 2, 3…) or blank if not shown
+
+**Multi-select questions** (`[mc-multi]`):
+- One column named `{label}`
+- Value is a **comma-separated string** of selected choice numbers: `"1,3,5"`
+- Not separate binary columns per choice
+
+**Loop & Merge columns**:
+- Named `{iter}_{label}` — the iteration number comes **first** (e.g. `1_threat_methods`, `2_threat_harms`)
+- Multi-select questions inside the loop also use comma-separated format
+- Columns are generated for all possible iterations (up to the number of source choices), blank for unused iterations
+
+**Rank order with carry-forward**:
+- One column per source question choice: `{label}_1`, `{label}_2`, … `{label}_N`
+- Value = rank position assigned to that choice; blank if the choice was not carried forward for this respondent
+
+**`[+text]` choices**:
+- Add an extra `{label}_{choice_number}_TEXT` column (e.g. `gender_4_TEXT`, `former_service_4_TEXT`)
+- Also added for carry-forward sources: e.g. if the loop source had a `[+text]` choice, `{rank_label}_{N}_TEXT` appears
+- Values are blank unless the respondent typed something
+
+**Skipped/branched-out questions**: blank string `""`, not absent from the row.
