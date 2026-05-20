@@ -176,6 +176,34 @@ scale: Poor, Fair, Good, Excellent
 
 See [example.md](example.md) for a full example.
 
+## Using with Claude Code
+
+This project includes a Claude Code skill that lets you describe a survey in plain language and have Claude write or edit the markdown spec for you.
+
+**Requirements:** [Claude Code](https://claude.ai/code) CLI installed and authenticated.
+
+```bash
+# Open Claude Code in the project directory
+claude
+```
+
+Then type `/survey` to activate the skill. Claude will load the full syntax reference and help you:
+
+- Draft new survey questions and blocks
+- Add skip logic, branch flow, and loop & merge
+- Choose appropriate question types and scale labels
+- Run the converter and fix any warnings
+
+**Example prompts after `/survey`:**
+
+> Add a matrix question measuring response efficacy with a 7-point agree/disagree scale
+
+> Add a screener block that skips to the end of the survey if the respondent selects "None of the above"
+
+> Convert the threat actors question into a loop block and ask about misuse methods for each
+
+Claude reads your `.md` file directly, makes edits, and runs `convert.py` to verify the output before reporting back.
+
 ## Documentation
 
 - [SURVEY_SPEC.md](SURVEY_SPEC.md) — full markdown syntax reference
